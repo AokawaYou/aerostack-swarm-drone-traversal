@@ -1,20 +1,23 @@
 #include "dynamic_object.hpp"
+// [fix8] logging macros (gzerr/gzmsg) live in gz-common
+#include <gz/common/Console.hh>
 
 #include <gz/plugin/Register.hh>
-// Register the plugin with Gazebo Fortress
-IGNITION_ADD_PLUGIN(
+// [fix7] Harmonic: the loader only accepts the GzPluginHook symbol, so the
+// deprecated IGNITION_ADD_PLUGIN macro (IgnitionPluginHook) never loads.
+GZ_ADD_PLUGIN(
     gzplugin::DynamicMovingObjects,
     gz::sim::System,
 	gzplugin::DynamicMovingObjects::ISystemConfigure, //)
 	gzplugin::DynamicMovingObjects::ISystemPreUpdate)
 
 // Optional alias for the plugin
-IGNITION_ADD_PLUGIN_ALIAS(gzplugin::DynamicMovingObjects, "gzplugin::DynamicMovingObjects")
+GZ_ADD_PLUGIN_ALIAS(gzplugin::DynamicMovingObjects, "gzplugin::DynamicMovingObjects")
 
 
 #define PI 3.14159265358979323846
 
-// using namespace ignition;
+// using namespace gz;
 namespace gzplugin
 {
 	
@@ -47,7 +50,7 @@ void DynamicMovingObjects::Configure(const gz::sim::Entity &_entity,
     this->model = gz::sim::Model(_entity); //std::make_shared<gz::physics::Model>(modelEntity);
 	if(!this->model.Valid(_ecm))
 	{
-		ignerr << "Dynamic Object should be attached to a model entity, failed to initialise" << std::endl;
+		gzerr << "Dynamic Object should be attached to a model entity, failed to initialise" << std::endl;
 		return;
 	}
 
@@ -60,6 +63,16 @@ void DynamicMovingObjects::Configure(const gz::sim::Entity &_entity,
 	if (_sdf->HasElement("topic_hz")) {
 		this->topic_hz = _sdf->Get<double>("topic_hz");
 	}
+
+	// [dsh20] 可选的 set_pose 限频参数（不写就用默认 50Hz）
+	if (_sdf->HasElement("move_hz")) {
+		this->move_hz = _sdf->Get<double>("move_hz");
+	}
+	if (this->move_hz < 1.0) {
+		this->move_hz = 1.0;
+	}
+	gzmsg << "[dsh20] set_pose service rate = " << this->move_hz
+	      << " Hz (sim time)" << std::endl;
 
 	if (_sdf->HasElement("boundary_min_x")) {
 		this->boundary_min_x = _sdf->Get<double>("boundary_min_x");
@@ -95,14 +108,14 @@ void DynamicMovingObjects::Configure(const gz::sim::Entity &_entity,
 	this->velocity_direction = this->movement_velocity * gz::math::Vector3d(cos(this->initial_angle), sin(this->initial_angle), 0);  // Initial movement along X-axis
 	
 	// Create Publisher and Subscriber for ROS2 to interact with this
-	this->location_pub = node.Advertise<ignition::msgs::Pose>(this->topic);
+	this->location_pub = node.Advertise<gz::msgs::Pose>(this->topic);
 	if (!this->location_pub)
 	{
-		ignerr << "Error advertising topic [" << this->topic << "]" << std::endl;
+		gzerr << "Error advertising topic [" << this->topic << "]" << std::endl;
 		return;
 	} 
 
-	ignerr << "Publisher initialised on " << this->topic<< std::endl;
+	gzerr << "Publisher initialised on " << this->topic<< std::endl;
 }
 
 void DynamicMovingObjects::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::EntityComponentManager &_ecm)
@@ -122,7 +135,7 @@ void DynamicMovingObjects::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::
 	auto poseComp = _ecm.Component<gz::sim::components::Pose>(this->model.Entity());
 	if (!poseComp)
 	{
-		ignerr << "Pose component missing from model." << std::endl;
+		gzerr << "Pose component missing from model." << std::endl;
 		return;
 	}
 
@@ -132,7 +145,18 @@ void DynamicMovingObjects::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::
 	double dt = std::chrono::duration<double>(_info.dt).count();
 
 	// Compute new position
-	gz::math::Vector3d new_position = pose.Pos() + this->velocity_direction * dt;
+	// [dsh20] 服务调用限频之后，ECS 里的 pose 只会以 move_hz 更新；若还像原来那样
+	// 每步从 ECS 读回再 +v*dt，就会变成"每次服务调用才走一步" -> 柱子慢 5 倍。
+	// 所以位置改由本插件逐步积分（与原来逐字等价：ECS 里的 pose 本来就是上一步写进去的）。
+	if (!this->sim_position_init) {
+		this->sim_position = pose.Pos();
+		this->sim_position_init = true;
+	}
+	if ((this->sim_position - pose.Pos()).Length() > 0.5) {
+		// 被外部 teleport 过（例如用户手动 gz service set_pose）-> 重新对齐
+		this->sim_position = pose.Pos();
+	}
+	gz::math::Vector3d new_position = this->sim_position + this->velocity_direction * dt;
 
 	// Check boundary conditions and reverse direction if needed
 	if (new_position.X() < boundary_min_x || new_position.X() > boundary_max_x)
@@ -166,23 +190,46 @@ void DynamicMovingObjects::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::
 	gz::msgs::Vector3d *vec = msg.mutable_position();
 	vec->set_x(new_position.X());
 	vec->set_y(new_position.Y());
+	// [fix9] keep z: the old code left position.z at its default 0, so every
+	// set_pose call yanked the obstacle down to z=0 (half buried) and the
+	// formation could never meet it.
+	vec->set_z(new_position.Z());
+
+	// [fix9] preserve the orientation instead of resetting it to identity
+	gz::msgs::Quaternion *rot = msg.mutable_orientation();
+	rot->set_x(pose.Rot().X());
+	rot->set_y(pose.Rot().Y());
+	rot->set_z(pose.Rot().Z());
+	rot->set_w(pose.Rot().W());
 	
-	std::function<void(const ignition::msgs::Boolean &, const bool)> cb =
-	[](const ignition::msgs::Boolean &/*_rep*/, const bool _result)
+	std::function<void(const gz::msgs::Boolean &, const bool)> cb =
+	[](const gz::msgs::Boolean &/*_rep*/, const bool _result)
 	{
 		if (!_result)
-		ignerr << "Error setting pose configuration" << std::endl;
+		gzerr << "Error setting pose configuration" << std::endl;
 	};
 
-	this->node.Request(this->pose_service_name, msg, cb);
+	// [dsh20] 按**仿真时间**限频调用 set_pose。原来这一行每个物理步都执行，
+	// 是 gz server 单核跑满、real_time_factor ~0.5 的主要嫌疑（见文件头注释）。
+	const auto move_period =
+		std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(1.0 / this->move_hz));
+	if ((_info.simTime - this->last_move_time) >= move_period) {
+		this->node.Request(this->pose_service_name, msg, cb);
+		this->last_move_time = _info.simTime;
+	}
+	this->sim_position = new_position;
 
-	// Location Pub limited to topic_hz
-	this->current_time = this->current_time + dt;
-	// Check if enough time has passed since last publish (0.1s for 10Hz)
-	if (current_time  >= (1.0 / this->topic_hz))
+	// [fix9] Publish gate on SIMULATION time.
+	// The old `current_time += dt` never accumulated correctly here and the
+	// plugin published on nearly every step (measured 32365 msgs / 5 s).
+	const auto pub_period =
+		std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(1.0 / this->topic_hz));
+	if ((_info.simTime - this->last_publish_time) >= pub_period)
 	{
 		this->location_pub.Publish(msg);
-		this->current_time = 0.0;
+		this->last_publish_time = _info.simTime;
 	}
 
 	

@@ -60,7 +60,13 @@ SDF_DYNAMIC_OBJECT_TEMPLATE = """<?xml version="1.0" ?>
       <inertial>
         <mass>100</mass>
       </inertial>
+      <!-- fix15: 方盒以 link 原点为中心，而 world.yaml 里柱子的 z 恒为 0.0，
+           所以必须把 collision/visual 抬到 height/2，否则柱子一半埋在地下
+           （可见高度只剩 height/2）。这个模板每次 launch 都会重新生成
+           config_sim/world/models/dynamic_obstacle_*/，所以修复必须写在这里，
+           不能改生成物。 -->
       <collision name="collision">
+        <pose>0 0 {{ height / 2 }} 0 0 0</pose>
         <geometry>
           <box>
             <size>{{ width }} {{ length }} {{ height }}</size>
@@ -68,6 +74,7 @@ SDF_DYNAMIC_OBJECT_TEMPLATE = """<?xml version="1.0" ?>
         </geometry>
       </collision>
       <visual name="visual">
+        <pose>0 0 {{ height / 2 }} 0 0 0</pose>
         <geometry>
           <box>
             <size>{{ width }} {{ length }} {{ height }}</size>

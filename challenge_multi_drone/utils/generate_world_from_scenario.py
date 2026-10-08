@@ -179,11 +179,18 @@ def generate_as2_dynamic_objects_config(scenario, output_model_folder):
         # Get random start location relative to stage center and stage size
         loc = [l + (random.random() * s) - (s/2.0) for s, l in zip(size, center)]
         
+        # [plan5] 柱子活动区**收边**（原来 == 赛场本身）。
+        # 实测问题：柱子停在 y=1.0 边界时柱体最南到 y=0.75，而起飞后五边形集结点
+        # 最北机位是 y=+0.76 -> 差 1cm，柱子一停边界就压在编队上；且柱高 5m，
+        # 垂直起飞要穿过它的 0~5m 体段，所以只能收缩活动区，不能靠升高度绕开。
+        # 可用 scenario 的 stage4.obstacle_boundary_inset_y_min / _inset 覆盖。
+        _inset_y_min = float(stage.get("obstacle_boundary_inset_y_min", 1.5))
+        _inset_xy = float(stage.get("obstacle_boundary_inset", 0.0))
         boundaries = {
-            "min_x": center[0] - size[0]/2.0,
-            "min_y": center[1] - size[1]/2.0,
-            "max_x": center[0] + size[0]/2.0,
-            "max_y": center[1] + size[1]/2.0
+            "min_x": center[0] - size[0]/2.0 + _inset_xy,
+            "min_y": center[1] - size[1]/2.0 + _inset_y_min,
+            "max_x": center[0] + size[0]/2.0 - _inset_xy,
+            "max_y": center[1] + size[1]/2.0 - _inset_xy
         }
 
         object_size = [stage["obstacle_diameter"], stage["obstacle_diameter"], stage["obstacle_height"]]

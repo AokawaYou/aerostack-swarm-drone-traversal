@@ -54,6 +54,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import yaml
 
+from launch.actions import TimerAction
+
 
 def simulation(world_name: str, gui_config: str = '', headless: bool = False,
                verbose: bool = False, run_on_start: bool = True):
@@ -190,7 +192,8 @@ def launch_simulation(context: LaunchContext):
         world, 'world_path') else world.world_name
     launch_processes.extend(simulation(
         world_to_load, gui_config_file, headless, verbose, run_on_start))
-    launch_processes.extend(spawn(world))
+    # launch_processes.extend(spawn(world))
+    launch_processes.append(TimerAction(period=10.0, actions=spawn(world)))
     launch_processes.extend(world_bridges() + object_bridges())
     return launch_processes
 

@@ -1,20 +1,23 @@
 #include "led_ring.hpp"
+// [fix8] logging macros (gzerr/gzmsg) live in gz-common
+#include <gz/common/Console.hh>
 
 #include <gz/plugin/Register.hh>
-// Register the plugin with Gazebo Fortress
-IGNITION_ADD_PLUGIN(
+// [fix7] Harmonic: the loader only accepts the GzPluginHook symbol, so the
+// deprecated IGNITION_ADD_PLUGIN macro (IgnitionPluginHook) never loads.
+GZ_ADD_PLUGIN(
     gzplugin::LedRingPlugin,
     gz::sim::System,
 	gzplugin::LedRingPlugin::ISystemConfigure, //)
 	gzplugin::LedRingPlugin::ISystemPreUpdate)
 
 // Optional alias for the plugin
-IGNITION_ADD_PLUGIN_ALIAS(gzplugin::LedRingPlugin, "gzplugin::LedRingPlugin")
+GZ_ADD_PLUGIN_ALIAS(gzplugin::LedRingPlugin, "gzplugin::LedRingPlugin")
 
 
 #define PI 3.14159265358979323846
 
-// using namespace ignition;
+// using namespace gz;
 namespace gzplugin
 {
 	
@@ -47,7 +50,7 @@ void LedRingPlugin::Configure(const gz::sim::Entity &_entity,
     this->model = gz::sim::Model(_entity); //std::make_shared<gz::physics::Model>(modelEntity);
 	if(!this->model.Valid(_ecm))
 	{
-		ignerr << "LedRingPlugin should be attached to a model entity, failed to initialise" << std::endl;
+		gzerr << "LedRingPlugin should be attached to a model entity, failed to initialise" << std::endl;
 		return;
 	}
 
@@ -74,34 +77,34 @@ void LedRingPlugin::Configure(const gz::sim::Entity &_entity,
 
 	// Create Publisher and Subscriber for ROS2 to interact with this
 	// this->publisher_name = this->robot_namespace + "/leds/status";
-	// this->led_status_pub = node.Advertise<ignition::msgs::Float_V>(this->publisher_name);
+	// this->led_status_pub = node.Advertise<gz::msgs::FloatV>(this->publisher_name);
 	// if (!this->led_status_pub)
 	// {
-	// 	ignerr << "Error advertising topic [" << this->publisher_name << "]" << std::endl;
+	// 	gzerr << "Error advertising topic [" << this->publisher_name << "]" << std::endl;
 	// 	return;
 	// }
 
 	this->subscription_control_individual_name = this->robot_namespace+"/leds/control_individual";
 	if(!this->node.Subscribe(this->subscription_control_individual_name, &LedRingPlugin::OnLedIndividualMsg, this))
 	{
-		ignerr << "Error subscribing to topic [" << this->subscription_control_individual_name << "]" << std::endl;
+		gzerr << "Error subscribing to topic [" << this->subscription_control_individual_name << "]" << std::endl;
 		return;
 	}
 
 	this->subscription_control_name = this->robot_namespace+"/leds/control";
 	if(!this->node.Subscribe(this->subscription_control_name, &LedRingPlugin::OnLedMsg, this))
 	{
-		ignerr << "Error subscribing to topic [" << this->subscription_control_name << "]" << std::endl;
+		gzerr << "Error subscribing to topic [" << this->subscription_control_name << "]" << std::endl;
 		return;
 	}
 
-	// ignerr << "Publisher initialised on " << this->subscription_name << std::endl;
-	ignerr << "Subscriber initialised on " << this->subscription_control_individual_name<< std::endl;
-	ignerr << "Subscriber initialised on " << this->subscription_control_name<< std::endl;
+	// gzerr << "Publisher initialised on " << this->subscription_name << std::endl;
+	gzerr << "Subscriber initialised on " << this->subscription_control_individual_name<< std::endl;
+	gzerr << "Subscriber initialised on " << this->subscription_control_name<< std::endl;
 }
 
-void LedRingPlugin::OnLedMsg(const ignition::msgs::Color &colour) {
-	auto msg = ignition::msgs::Float_V();
+void LedRingPlugin::OnLedMsg(const gz::msgs::Color &colour) {
+	auto msg = gz::msgs::FloatV();
 	for(int i = 0; i < this->n_leds ; i++){
 		msg.add_data(colour.r());
 		msg.add_data(colour.g());
@@ -110,18 +113,18 @@ void LedRingPlugin::OnLedMsg(const ignition::msgs::Color &colour) {
 	this->OnLedIndividualMsg(msg);
 }
 
-void LedRingPlugin::OnLedIndividualMsg(const ignition::msgs::Float_V &leds) {
+void LedRingPlugin::OnLedIndividualMsg(const gz::msgs::FloatV &leds) {
 	auto data = leds.data();
-	ignerr << "Received an LED Control msg" << std::endl;
+	gzerr << "Received an LED Control msg" << std::endl;
 	if(!this->_configured) {
-		ignerr << "LED Ring Not Configured Yet" << std::endl;
+		gzerr << "LED Ring Not Configured Yet" << std::endl;
 		return;
 	}
 
 	int data_size = data.size();
 	int num_leds_in_data = (int) data_size / 3;
 	if(num_leds_in_data > this->led_colours.size()) {
-		ignerr << "Received more led colours than expected" << std::endl;
+		gzerr << "Received more led colours than expected" << std::endl;
 	}
 
 	// for(float d: data) {
@@ -130,7 +133,7 @@ void LedRingPlugin::OnLedIndividualMsg(const ignition::msgs::Float_V &leds) {
 		float g = data[i*3 + 1];
 		float b = data[i*3 + 2];
 	
-		ignerr << i << " " << std::to_string(r) + " " << std::to_string(g) + " " << std::to_string(b) << std::endl;
+		gzerr << i << " " << std::to_string(r) + " " << std::to_string(g) + " " << std::to_string(b) << std::endl;
 
 		// Check if different, then send request msg chaneg
 		// if(this->led_colours[i*3] - r > 1e-5 ||
@@ -146,17 +149,17 @@ void LedRingPlugin::OnLedIndividualMsg(const ignition::msgs::Float_V &leds) {
 		gz::msgs::Set(mat->mutable_diffuse(), gz::math::Color(r, g, b, 1.0));  // Red color
 		gz::msgs::Set(mat->mutable_emissive(), gz::math::Color(r, g, b, 1.0));  // Red color
 
-		std::function<void(const ignition::msgs::Boolean &, const bool)> cb =
-			[](const ignition::msgs::Boolean &/*_rep*/, const bool _result)
+		std::function<void(const gz::msgs::Boolean &, const bool)> cb =
+			[](const gz::msgs::Boolean &/*_rep*/, const bool _result)
 		{
 			if (!_result)
-			ignerr << "Error setting material color configuration"
+			gzerr << "Error setting material color configuration"
 					<< " on visual" << std::endl;
 		};
 
 		this->node.Request(this->visual_config_service_name, msg, cb);
 
-		ignerr << "Sent Service Call Diffusive and Emmisive to " << visual_entity << std::endl;
+		gzerr << "Sent Service Call Diffusive and Emmisive to " << visual_entity << std::endl;
 		this->visual_config_pub.Publish(msg);
 		// }
 
@@ -178,7 +181,7 @@ void LedRingPlugin::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::EntityC
 		// Create Subscriber to the visual_config with world
 		std::string world_name = *this->world.Name(_ecm);
 		this->visual_config_service_name = "/world/"+world_name+"/visual_config";
-		ignerr << "Materials Service Call Sent To " << this->visual_config_service_name << std::endl;
+		gzerr << "Materials Service Call Sent To " << this->visual_config_service_name << std::endl;
 
 		gz::sim::SdfEntityCreator entityCreator(_ecm, *(this->em));
 
@@ -201,7 +204,7 @@ void LedRingPlugin::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::EntityC
 		// Create the entities using the EntityCreator
 		auto linkEntity = entityCreator.CreateEntities(&sdfLink);
 		if(linkEntity == gz::sim::kNullEntity) {
-			ignerr << "LinkEntity failed to be created" << std::endl;
+			gzerr << "LinkEntity failed to be created" << std::endl;
 		} 
 		entityCreator.SetParent(linkEntity, this->model.Entity());
 		_ecm.CreateComponent(linkEntity, gz::sim::components::VisualCmd());
@@ -250,7 +253,7 @@ void LedRingPlugin::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::EntityC
 			// Assuming `entityCreator` is already being used to create the entity
 			auto visualEntity = entityCreator.CreateEntities(&sdfVisual);
 			if (visualEntity == gz::sim::kNullEntity) {
-				ignerr << "Failed to create visual entity" << std::endl;
+				gzerr << "Failed to create visual entity" << std::endl;
 				continue;
 			} 
 			// Ensure it's marked as a Visual in Gazebo
@@ -286,13 +289,13 @@ void LedRingPlugin::PreUpdate(const gz::sim::UpdateInfo &_info, gz::sim::EntityC
 
 		auto jointEntity = entityCreator.CreateEntities(&sdfJoint, true); // Needs true as it avoids dynamic resolution which will fail to find the base_link
 		if(jointEntity == gz::sim::kNullEntity) {
-			ignerr << "led_joint jointEntity failed to be created" << std::endl;
+			gzerr << "led_joint jointEntity failed to be created" << std::endl;
 		}
 		entityCreator.SetParent(jointEntity, this->model.Entity());
 
 		this->_configured = true;
-		ignerr << "LedRingPlugin Configured"<< std::endl;
-		ignmsg << "LedRingPlugin Configured"<< std::endl;
+		gzerr << "LedRingPlugin Configured"<< std::endl;
+		gzmsg << "LedRingPlugin Configured"<< std::endl;
 	}
 } // end of PreUpdate()
 

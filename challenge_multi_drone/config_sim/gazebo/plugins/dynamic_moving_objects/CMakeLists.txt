@@ -23,15 +23,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 # Referencing: https://github.com/gazebosim/ros_gz_project_template/blob/fortress/ros_gz_example_gazebo/CMakeLists.txt 
-find_package(ignition-cmake2 REQUIRED)
-find_package(ignition-plugin1 REQUIRED COMPONENTS register)
-set(GZ_PLUGIN_VER ${ignition-plugin1_VERSION_MAJOR})
-find_package(ignition-common4 REQUIRED COMPONENTS profiler)
-set(GZ_COMMON_VER ${ignition-common4_VERSION_MAJOR})
-find_package(ignition-gazebo6 REQUIRED)
-set(GZ_SIM_VER ${ignition-gazebo6_VERSION_MAJOR})
-find_package(ignition-physics5 REQUIRED)
-set(GZ_PHYSICS_VER ${ignition-physics5_VERSION_MAJOR})
+
+find_package(gz-plugin2 REQUIRED COMPONENTS register)
+set(GZ_PLUGIN_VER ${gz-plugin2_VERSION_MAJOR})
+find_package(gz-common5 REQUIRED COMPONENTS profiler)
+set(GZ_COMMON_VER ${gz-common5_VERSION_MAJOR})
+find_package(gz-sim8 REQUIRED)
+set(GZ_SIM_VER ${gz-sim8_VERSION_MAJOR})
+
+
 
 # Build the plugin library
 set(PLUGIN_NAME DynamicMovingObjects)
@@ -41,10 +41,6 @@ add_library(${PLUGIN_NAME} SHARED
 set_property(TARGET ${PLUGIN_NAME} PROPERTY CXX_STANDARD 17)
 target_include_directories(${PLUGIN_NAME} PUBLIC include)
 target_link_libraries(${PLUGIN_NAME}
-  ignition-gazebo${GZ_SIM_VER}::ignition-gazebo${GZ_SIM_VER}
-  ignition-plugin${GZ_PLUGIN_VER}::ignition-plugin${GZ_PLUGIN_VER}
-  ignition-common${GZ_COMMON_VER}::ignition-common${GZ_COMMON_VER}
-  ignition-physics${GZ_PHYSICS_VER}::ignition-physics${GZ_PHYSICS_VER}
 )
 
 # Install header files
@@ -64,3 +60,16 @@ install(TARGETS
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 ament_package()
+
+# [fix7] Harmonic link block ----------------------------------------------------
+# Link the gz-sim8 / gz-plugin2 targets that actually exist on this machine.
+# (gz-sim8 pulls in gz-common, gz-math, gz-transport, gz-msgs and sdformat.)
+if(TARGET gz-sim${GZ_SIM_VER}::gz-sim${GZ_SIM_VER})
+  target_link_libraries(${PLUGIN_NAME} gz-sim${GZ_SIM_VER}::gz-sim${GZ_SIM_VER})
+endif()
+if(TARGET gz-plugin${GZ_PLUGIN_VER}::register)
+  target_link_libraries(${PLUGIN_NAME} gz-plugin${GZ_PLUGIN_VER}::register)
+elseif(TARGET gz-plugin${GZ_PLUGIN_VER}::gz-plugin${GZ_PLUGIN_VER})
+  target_link_libraries(${PLUGIN_NAME} gz-plugin${GZ_PLUGIN_VER}::gz-plugin${GZ_PLUGIN_VER})
+endif()
+# -------------------------------------------------------------------------------

@@ -14,6 +14,8 @@
 #include <gz/sim/Joint.hh>
 #include <gz/sim/Util.hh>
 #include <gz/sim/SdfEntityCreator.hh>
+#include <chrono>
+
 #include <gz/math.hh>
 
 #include <gz/sim/components/DetachableJoint.hh>
@@ -91,8 +93,23 @@ class DynamicMovingObjects : public gz::sim::System,
         double initial_angle = 0.0; // radians
         gz::math::Vector3d velocity_direction; 
 
+        // [fix9][fix10] last publish time in SIMULATION time. gz-sim 8 exposes
+        // UpdateInfo::simTime as a steady_clock::duration, not a time_point.
+        std::chrono::steady_clock::duration last_publish_time{
+            std::chrono::steady_clock::duration::zero()};
+
         double topic_hz = 3.0;
         double current_time = 0.0;
+
+        // [dsh20] set_pose 服务调用的目标频率（仿真时间）。原来每个物理步发一次
+        //（step=4ms -> 250 次/秒 × 5 根柱子 = 1250 次/秒），实测 gz server 单核跑满、
+        // real_time_factor 只有 ~0.5。限频到 50Hz 后服务调用降为 1/5，
+        // 而运动轨迹完全不变（位置由下面的 sim_position 逐步积分）。
+        double move_hz = 50.0;
+        std::chrono::steady_clock::duration last_move_time{
+            std::chrono::steady_clock::duration::zero()};
+        gz::math::Vector3d sim_position;
+        bool sim_position_init{false};
 
         bool _configured = false;
     };

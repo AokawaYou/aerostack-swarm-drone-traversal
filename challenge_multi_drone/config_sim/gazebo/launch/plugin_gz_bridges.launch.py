@@ -41,20 +41,28 @@ def drone_bridges(context):
     """Return drone bridges."""
     namespace = LaunchConfiguration('namespace').perform(context)
 
+    # [fix13] direction: '@' bidirectional, '[' Gazebo->ROS, ']' ROS->Gazebo.
+    # A bidirectional obstacle bridge is a feedback loop (gz -> ROS -> gz), and
+    # this file runs once per drone, which amplified the topic to ~5k msgs/s.
+    want_obstacle = LaunchConfiguration('obstacle_bridge').perform(context).lower() \
+        in ('true', '1', 'yes')
+
     bridges = [
-        # (f"/model/{namespace}/leds/status", "leds/status", "ignition.msgs.Float_V", "ros_gz_interfaces/msg/Float32Array"),
-        # (f"/model/{namespace}/leds/control_individual", "leds/control_indvidual", "ignition.msgs.Float_V", "ros_gz_interfaces/msg/Float32Array"),
-        (f"/model/{namespace}/leds/control", "leds/control", "ignition.msgs.Color", "std_msgs/msg/ColorRGBA"),
-        (f"/dynamic_obstacles/locations", "/dynamic_obstacles/locations", "ignition.msgs.Pose_V", "geometry_msgs/msg/PoseArray")
+        # (gz_topic, ros_topic, gz_type, ros_type, direction)
+        (f"/model/{namespace}/leds/control", "leds/control",
+         "ignition.msgs.Color", "std_msgs/msg/ColorRGBA", "]"),
     ]
+    if want_obstacle:
+        bridges.append(("/dynamic_obstacles/locations", "/dynamic_obstacles/locations",
+                        "ignition.msgs.Pose", "geometry_msgs/msg/PoseStamped", "["))
 
     nodes = []
-    for gz_topic, ros_topic, gz_type, ros_type in bridges:
+    for gz_topic, ros_topic, gz_type, ros_type, direction in bridges:
         n = Node(package='ros_gz_bridge',
                 executable='parameter_bridge',
                 namespace=namespace,
                 output='screen',
-                arguments=[f'{gz_topic}@{ros_type}@{gz_type}'],
+                arguments=[f'{gz_topic}@{ros_type}{direction}{gz_type}'],
                 remappings=[(gz_topic, ros_topic)]
             )
         nodes.append(n)
@@ -67,6 +75,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'namespace',
             description='Drone ID to create bridges'
+        ),
+        # [fix13] only the base launch creates the (single) obstacle bridge
+        DeclareLaunchArgument(
+            'obstacle_bridge',
+            default_value='true',
+            description='create the GZ->ROS bridge for /dynamic_obstacles/locations'
         ),
         OpaqueFunction(function=drone_bridges)
     ])

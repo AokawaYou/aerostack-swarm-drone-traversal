@@ -45,7 +45,7 @@
 // #include <rclcpp/rclcpp.hpp>
 // #include <std_msgs/msg/bool.hpp>
 
-// using namespace ignition;
+// using namespace gz;
 // using namespace gazebo;
 namespace gzplugin {
 
@@ -72,8 +72,8 @@ class LedRingPlugin : public gz::sim::System,
 
     private:
 
-        void OnLedMsg(const ignition::msgs::Color &colour);
-        void OnLedIndividualMsg(const ignition::msgs::Float_V &leds);
+        void OnLedMsg(const gz::msgs::Color &colour);
+        void OnLedIndividualMsg(const gz::msgs::FloatV &leds);
 
         // Node for trasnport to send to ROS2 eventually
         gz::transport::Node node;
