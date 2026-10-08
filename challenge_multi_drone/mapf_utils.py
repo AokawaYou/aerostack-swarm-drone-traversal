@@ -230,19 +230,104 @@ class SimpleDrone(DroneInterface):
     def has_more_waypoints(self) -> bool:
         return self.path_index < len(self.path)
 
-    def takeoff(self, height: float = 1.0):
+    # [fix4] bounded service calls -------------------------------------------------
+    # AS2 的 Arm/Offboard 走 ServiceHandler.__call__ -> rclpy Client.call()，内部是
+    # `event.wait()` 且**没有超时**（rclpy/client.py:97）。WSL 下 DDS 丢一次响应、
+    # 或进程的发现层抖动，调用方就永久阻塞 —— 实测 gdb 栈可证。这里用
+    # call_async + 截止时间 + 重试替换掉这条无超时路径。
+    SERVICE_TIMEOUT = 8.0   # seconds to wait for one response
+    SERVICE_RETRIES = 4     # total attempts
+    SERVICE_WAIT = 5.0      # seconds to wait for the service to show up
+
+    def _bounded_bool_service(self, service_name: str, value: bool,
+                              timeout: float = None, retries: int = None) -> bool:
+        """Call a std_srvs/SetBool service with a deadline and retries."""
+        import time as _time
+
+        from std_srvs.srv import SetBool
+
+        timeout = self.SERVICE_TIMEOUT if timeout is None else timeout
+        retries = self.SERVICE_RETRIES if retries is None else retries
+
+        for attempt in range(1, retries + 1):
+            try:
+                client = self.create_client(SetBool, service_name)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[fix] {self.drone_id} create_client({service_name}) failed: {exc}",
+                      flush=True)
+                return False
+
+            if not client.wait_for_service(timeout_sec=self.SERVICE_WAIT):
+                print(f"[fix] {self.drone_id} {service_name} NOT AVAILABLE "
+                      f"(attempt {attempt}/{retries})", flush=True)
+                _time.sleep(1.0)
+                continue
+
+            request = SetBool.Request()
+            request.data = value
+            try:
+                future = client.call_async(request)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[fix] {self.drone_id} call_async({service_name}) raised: {exc}",
+                      flush=True)
+                _time.sleep(1.0)
+                continue
+
+            deadline = _time.time() + timeout
+            while not future.done() and _time.time() < deadline:
+                _time.sleep(0.05)
+
+            if future.done():
+                try:
+                    ok = bool(future.result().success)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[fix] {self.drone_id} {service_name} result error: {exc}",
+                          flush=True)
+                    ok = False
+                print(f"[fix] {self.drone_id} {service_name}({value}) -> {ok} "
+                      f"(attempt {attempt}, {_time.time() - (deadline - timeout):.1f}s)",
+                      flush=True)
+                return ok
+
+            print(f"[fix] {self.drone_id} {service_name} TIMEOUT after {timeout}s "
+                  f"(attempt {attempt}/{retries})", flush=True)
+            _time.sleep(1.0)
+
+        print(f"[fix] {self.drone_id} {service_name}({value}) FAILED after {retries} attempts",
+              flush=True)
+        return False
+
+    def arm(self) -> bool:
+        """Arm the drone (bounded, retrying)."""
+        return self._bounded_bool_service("set_arming_state", True)
+
+    def offboard(self) -> bool:
+        """Enable offboard mode (bounded, retrying)."""
+        return self._bounded_bool_service("set_offboard_mode", True)
+
+    def manual(self) -> bool:
+        """[fix11] Disable offboard mode (bounded, retrying)."""
+        return self._bounded_bool_service("set_offboard_mode", False)
+
+    def disarm(self) -> bool:
+        """[fix11] Disarm (bounded, retrying) - used by the reset-on-exit hook."""
+        return self._bounded_bool_service("set_arming_state", False)
+
+    # ---------------------------------------------------------------------------
+
+    def takeoff(self, height: float = 1.0, speed: float = 0.5, wait: bool = False):
         print(f"{self.drone_id} taking off to height {height}")
         try:
-            result = super().takeoff(height, 0.5, False)
+            result = super().takeoff(height, speed, wait)
             self.is_moving = True
         except Exception as e:
             print(f"Takeoff error for {self.drone_id}: {e}")
         self.current_pose[2] = height
 
-    def land(self):
+    def land(self, speed: float = 0.5, wait: bool = False):
         print(f"{self.drone_id} landing")
         try:
-            result = super().land(0.5, False)
+            result = super().land(speed, wait)
             self.is_moving = True
         except Exception as e:
             print(f"Land error for {self.drone_id}: {e}")

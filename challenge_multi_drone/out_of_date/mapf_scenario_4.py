@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
 
+# [fix5] RMW self-alignment ------------------------------------------------------
+# AS2 栈全部运行在 rmw_cyclonedds_cpp 上。若本脚本在没有 export
+# RMW_IMPLEMENTATION 的 shell 里启动，就会退回默认的 rmw_fastrtps_cpp，而两套 RMW
+# 在 RTPS 层只有"部分互通"：服务会被 wait_for_service 认成可用，但请求/响应送不到
+# （表现：[fix] 日志里 set_arming_state / set_offboard_mode 全部 TIMEOUT、却没有
+# 一条 NOT AVAILABLE），并且本进程的节点在别人的 ROS 图里永远不出现。
+# 这里在 import rclpy 之前强制对齐，必要时原样重启自己一次。
+import os as _os
+import sys as _sys
+
+_RMW_WANTED = "rmw_cyclonedds_cpp"
+_rmw_old = _os.environ.get("RMW_IMPLEMENTATION")
+if _rmw_old != _RMW_WANTED:
+    _os.environ["RMW_IMPLEMENTATION"] = _RMW_WANTED
+    if not _os.environ.get("_DSH_RMW_REEXEC"):
+        _os.environ["_DSH_RMW_REEXEC"] = "1"
+        print(f"[fix5] RMW_IMPLEMENTATION={_rmw_old or 'unset'} -> re-exec with {_RMW_WANTED}",
+              flush=True)
+        _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+# -------------------------------------------------------------------------------
+
 import argparse
 import sys
 import time
@@ -68,11 +89,68 @@ class SwarmConductor:
                 import traceback
                 traceback.print_exc()
 
+    def reset_all(self):
+        """[fix11] 把 5 架机复位到起飞前的初始状态与位置，便于下一轮测试。
+
+        之前每跑完一轮都留下"offboard=true 但 disarmed"的脏状态，下一轮的
+        takeoff 目标会被行为服务器拒收（Goal Rejected）；这里在退出前统一
+        关 offboard -> disarm -> 把 gz 里的模型位姿搬回世界文件里的初始位置。
+        """
+        import os as _os
+        import subprocess
+
+        print("Resetting all drones to their initial state (offboard off, disarm, teleport home)...")
+        for drone in self.drones.values():
+            try:
+                drone.manual()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  {drone.drone_id} manual() failed: {exc}", flush=True)
+
+        for drone in self.drones.values():
+            try:
+                drone.disarm()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  {drone.drone_id} disarm() failed: {exc}", flush=True)
+
+        world_yaml = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                   "config_sim/world/world.yaml")
+        if not _os.path.exists(world_yaml):
+            print(f"  {world_yaml} not found - skipping teleport back home")
+            return
+
+        with open(world_yaml, "r") as handle:
+            world = yaml.safe_load(handle)
+        world_name = world.get("world_name", "empty")
+        spawn = {entry["model_name"]: entry["xyz"] for entry in world.get("drones", [])}
+
+        for drone in self.drones.values():
+            xyz = spawn.get(drone.drone_id)
+            if xyz is None:
+                continue
+            x, y, z = xyz
+            request = (f'name: "{drone.drone_id}", '
+                       f'position: {{x: {x}, y: {y}, z: {z}}}, orientation: {{w: 1.0}}')
+            command = ["gz", "service", "-s", f"/world/{world_name}/set_pose",
+                       "--reqtype", "gz.msgs.Pose", "--reptype", "gz.msgs.Boolean",
+                       "--timeout", "5000", "--req", request]
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+                ok = "true" in (result.stdout + result.stderr)
+            except Exception as exc:  # noqa: BLE001
+                ok = False
+                print(f"  {drone.drone_id} teleport error: {exc}", flush=True)
+            print(f"  {drone.drone_id} -> {xyz} : {'ok' if ok else 'FAILED'}", flush=True)
+
     def takeoff_all(self):
         # First arm and set to offboard mode for all drones
         for drone in self.drones.values():
-            drone.arm()
-            drone.offboard()
+            beat(f"arming {drone.drone_id}")
+            print(f"[fix] arming {drone.drone_id} ...", flush=True)
+            ok_arm = drone.arm()
+            print(f"[fix] {drone.drone_id} arm -> {ok_arm}", flush=True)
+            print(f"[fix] offboard {drone.drone_id} ...", flush=True)
+            ok_off = drone.offboard()
+            print(f"[fix] {drone.drone_id} offboard -> {ok_off}", flush=True)
 
         # Set different LED colors for different drones to distinguish them
         colors = [
@@ -243,7 +321,12 @@ class SwarmConductor:
         
 
         # 2) Compute global origin, start and end
-        cruise_alt = 3.5  # Fixed altitude of 4.5 meters for all waypoints (increased from 3.5)
+        # [fix11] 巡航高度必须低于柱顶，否则整条航路都在柱子之上、实时避障永远
+        # 触发不了。柱子高 obs_h(=5.0) 且现立在 z=2.5 -> 顶端 5.0m；下面的自检
+        # 会在高度改错时立刻喊出来（原注释写 4.5m 但值是 3.5m，是过期注释）。
+        cruise_alt = 3.5
+        print(f"Cruise altitude {cruise_alt} m vs obstacle top {obs_h} m -> "
+              f"{'BELOW top (avoidance testable)' if cruise_alt < obs_h else 'ABOVE the top - avoidance CANNOT trigger!'}")
         origin_wp = [0.0, 0.0, cruise_alt]
         start_wp  = [x0 - sy_rel, y0 - sx_rel, cruise_alt]
         start_wp[1] -= 1.5
@@ -1488,6 +1571,82 @@ class SwarmConductor:
 # Main Fonksiyonu        #
 ##########################
 
+# [fix4] faulthandler + stall watchdog -------------------------------------------
+# 任何一次"卡住"都要能立刻拿到每个线程的 Python 栈，而不是靠猜。
+#   * SIGUSR1 -> 把全线程栈追加写到 /tmp/dsh_stack.log（外部可直接 kill -USR1 <pid>）
+#   * 看门狗：30s 没有进度就打一次全线程栈（只打印，不杀进程，不会误伤慢但正常的运行）
+_PROGRESS = {"beat": 0.0, "where": "startup"}
+_STACK_FILE = None
+
+
+def beat(where: str) -> None:
+    """Mark forward progress (used by the stall watchdog)."""
+    import time as _time
+    _PROGRESS["beat"] = _time.time()
+    _PROGRESS["where"] = where
+
+
+# [fix6] print-anywhere progress heartbeat -------------------------------------
+# 看门狗不该靠人工埋点：把 builtins.print 包一层，mission 每打印一行就算一次进度，
+# 并且把最后一行当成"当前在哪"的标记。
+import builtins as _builtins
+import time as _time_mod
+
+if not getattr(_builtins, "_dsh_print_wrapped", False):
+    _dsh_real_print = _builtins.print
+
+    def _dsh_print(*args, **kwargs):
+        try:
+            _PROGRESS["beat"] = _time_mod.time()
+            _PROGRESS["where"] = " ".join(str(a) for a in args)[:70]
+        except Exception:  # noqa: BLE001
+            pass
+        return _dsh_real_print(*args, **kwargs)
+
+    _builtins.print = _dsh_print
+    _builtins._dsh_print_wrapped = True
+# -------------------------------------------------------------------------------
+
+def _install_stall_watchdog() -> None:
+    import faulthandler
+    import os as _os
+    import signal as _signal
+    import threading as _threading
+    import time as _time
+
+    global _STACK_FILE
+    try:
+        _STACK_FILE = open("/tmp/dsh_stack.log", "a", buffering=1)
+        faulthandler.enable(file=_STACK_FILE, all_threads=True)
+        faulthandler.register(_signal.SIGUSR1, file=_STACK_FILE, all_threads=True,
+                              chain=False)
+        print("[fix] faulthandler armed: kill -USR1 <pid> dumps stacks to /tmp/dsh_stack.log",
+              flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fix] faulthandler setup failed: {exc}", flush=True)
+
+    beat("startup")
+
+    def watch():
+        last_dump = 0.0
+        while True:
+            _time.sleep(5.0)
+            idle = _time.time() - _PROGRESS["beat"]
+            if idle > 45.0 and _time.time() - last_dump > 60.0:
+                last_dump = _time.time()
+                print(f"[fix] no progress heartbeat for {idle:.0f}s "
+                      f"(last print: '{_PROGRESS['where']}') - dumping all thread "
+                      f"stacks to /tmp/dsh_stack.log", flush=True)
+                if _STACK_FILE is not None:
+                    try:
+                        faulthandler.dump_traceback(_STACK_FILE, all_threads=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    _threading.Thread(target=watch, name="dsh-stall-watchdog", daemon=True).start()
+# -------------------------------------------------------------------------------
+
+
 def main():
     parser = argparse.ArgumentParser(description='Multi-drone formation flight mission with centralized MAPF (Scenario 2)')
     parser.add_argument('-n','--namespaces', nargs='+',
@@ -1504,17 +1663,39 @@ def main():
     args = parser.parse_args()
 
     rclpy.init()
+    # [fix5] verify the active rmw implementation -------------------------------
+    try:
+        try:
+            import rclpy as _rclpy_mod
+            _rmw_now = _rclpy_mod.get_rmw_implementation_identifier()
+        except AttributeError:
+            from rclpy.utilities import get_rmw_implementation_identifier as _get_rmw
+            _rmw_now = _get_rmw()
+        print(f"[fix5] active rmw implementation = {_rmw_now}", flush=True)
+        if _rmw_now != _RMW_WANTED:
+            print(f"[fix5] !! WRONG RMW: this process uses {_rmw_now} while the AS2 stack "
+                  f"runs {_RMW_WANTED}; the two only partially interoperate, so every "
+                  f"service call will TIMEOUT. Run with "
+                  f"RMW_IMPLEMENTATION={_RMW_WANTED} (or source challenge_multi_drone/setup.bash).",
+                  flush=True)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[fix5] could not query rmw implementation: {_exc}", flush=True)
+    # ---------------------------------------------------------------------------
+    _install_stall_watchdog()
     swarm = SwarmConductor(args.namespaces, verbose=args.verbose, use_sim_time=args.use_sim_time,
                            scenario_file=args.scenario_file)
 
+    # 2026-10-07 fix: DroneInterface 自带 spin 线程（SingleThreadedExecutor + __auto_spin），
+    # 这里再建 MultiThreadedExecutor 去 spin 同一批节点 = 两个 executor 争抢回调，
+    # 会让 ServiceHandler 的 Client.call()（无超时）永远收不到响应 -> 卡在 takeoff_all 的 arm()。
+    # 因此保留对象但不再重复 spin（等价于 carmendrpr/flocking_behavior 的 mission_swarm.py 做法）。
     executor = MultiThreadedExecutor()
-    for drone in swarm.drones.values():
-        executor.add_node(drone)
-    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread = threading.Thread(target=lambda: None, daemon=True)
     spin_thread.start()
 
     try:
         print("Starting takeoff sequence...")
+        beat("takeoff_all")
         swarm.takeoff_all()
         
         # Determine which scenario to run based on the scenario filename
@@ -1538,11 +1719,18 @@ def main():
             swarm.execute_scenario2_mission()
         
         print("Landing all drones...")
+        beat("land_all")
         swarm.land_all()
     except KeyboardInterrupt:
         print("Operation interrupted by user")
     finally:
         print("Cleaning up...")
+        # [fix11] 复位无人机，避免下一轮 takeoff 因脏状态被拒
+        beat("reset drones")
+        try:
+            swarm.reset_all()
+        except Exception as e:
+            print(f"Error during drone reset: {e}")
         # Close all matplotlib figures before shutdown
         plt.close('all')
         
