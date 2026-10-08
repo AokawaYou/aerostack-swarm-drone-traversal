@@ -16,8 +16,9 @@
       use_gazebo_tf: true
       plugin_name: "ground_truth"
       # Outdoor (GPS)
-      use_gps: true
-      set_origin_on_start: true # Set origin on start
+      # use_gps: true
+      use_gps: false
+      # set_origin_on_start: true # Set origin on start
 
   # Motion Controller
   controller_manager:

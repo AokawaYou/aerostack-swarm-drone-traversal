@@ -40,12 +40,13 @@ windows:
             use_sim_time:=true
             simulation_config_file:=<%= simulation_config_file %>
                 <%- end %> # end first drone
-        - ros2 launch as2_platform_gazebo platform_gazebo_launch.py
+        - sleep 30 && ros2 launch as2_platform_gazebo platform_gazebo_launch.py
             namespace:=<%= drone_namespace %>
             platform_config_file:=<%= config_file %>
             simulation_config_file:=<%= simulation_config_file %>
-        - ros2 launch config_sim/gazebo/launch/plugin_gz_bridges.launch.py
+        - sleep 30 && ros2 launch config_sim/gazebo/launch/plugin_gz_bridges.launch.py
             namespace:=<%= drone_namespace %>
+            obstacle_bridge:=<%= base_launch %>
             <%- end %> # End simulation type
         <%- else %> # IF ON A REAL PLATFORM
             <%- if base_launch %>
@@ -61,11 +62,11 @@ windows:
       layout:
       panes:
         # State Estimation
-        - ros2 launch as2_state_estimator state_estimator_launch.py
+        - sleep 35 && ros2 launch as2_state_estimator state_estimator_launch.py
             namespace:=<%= drone_namespace %>
             config_file:=<%= config_file %>
         # Motion Controller
-        - ros2 launch as2_motion_controller controller_launch.py
+        - sleep 35 && ros2 launch as2_motion_controller controller_launch.py
             namespace:=<%= drone_namespace %>
             config_file:=<%= config_file %>
             plugin_name:=pid_speed_controller
@@ -76,15 +77,15 @@ windows:
       layout:
       panes:
         # Motion Behaviors
-        - ros2 launch as2_behaviors_motion motion_behaviors_launch.py
+        - sleep 40 && ros2 launch as2_behaviors_motion motion_behaviors_launch.py
             namespace:=<%= drone_namespace %>
             config_file:=<%= config_file %>
         # Trajectory Generation Behavior
-        - ros2 launch as2_behaviors_trajectory_generation generate_polynomial_trajectory_behavior_launch.py
+        - sleep 40 && ros2 launch as2_behaviors_trajectory_generation generate_polynomial_trajectory_behavior_launch.py
             namespace:=<%= drone_namespace %>
             config_file:=<%= config_file %>
         # Point Gimbal Behavior
-        - ros2 launch as2_behaviors_perception point_gimbal_behavior.launch.py
+        - sleep 40 && ros2 launch as2_behaviors_perception point_gimbal_behavior.launch.py
             namespace:=<%= drone_namespace %>
             config_file:=<%= config_file %>
 
@@ -93,19 +94,12 @@ windows:
       layout:
       panes:
         # Behavior tree
-        - ros2 launch as2_behavior_tree behavior_trees.launch.py
-            drone_id:=<%= drone_namespace %>
-            use_sim_time:=true
-            tree:=./trees/square.xml
+        - echo "as2_behavior_tree DISABLED - see sanan222-scenario4-fix-runbook.md"
 
   # Mission monitoring
   - mission_monitoring:
       layout: tiled
       panes:
-        - ros2 run as2_python_api mission_executor --n <%= drone_namespace %> 
-            <%- if simulation %>
-            --use_sim_time 
-            <%- end %>
-            --add_namespace
+        - echo "mission_executor DISABLED - saves about 115MB per drone"
         - ros2 run as2_alphanumeric_viewer as2_alphanumeric_viewer_node
             --ros-args -r  __ns:=/<%= drone_namespace %>

@@ -1,6 +1,9 @@
 #!/bin/bash
 set +e 
 
+# 清理上一次运行留下的 Fast-DDS 共享内存段（stale 文件会导致 discovery 失败）
+rm -f /dev/shm/fastrtps_* 2>/dev/null || true
+
 usage() {
     echo "  options:"
     echo "      -s: scenario file to load from. Default is 'scenarios/scenario1.yaml'"
